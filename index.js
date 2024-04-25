@@ -1,81 +1,139 @@
-import puppeteer from "puppeteer";
-import fs from "fs";
+const fs = require('fs')
+const puppeteer = require('puppeteer')
 
-const URL = "https://guap.ru/rasp/?g=323";
+const debugInfo = {
+  timestamp: new Date().toISOString(),
+  architecture: process.arch,
+  platform: process.platform,
+}
 
-(async () => {
-  const browser = await puppeteer.launch();
-  const page = await browser.newPage();
-  await page.goto(URL);
+const URL = 'https://guap.ru/rasp/'
 
-  const schedule = await page.evaluate(() => {
-    const days = [
-      "Понедельник",
-      "Вторник",
-      "Среда",
-      "Четверг",
-      "Пятница",
-      "Суббота",
-      "Воскресенье",
-    ];
-    const schedule = {};
+;(async () => {
+  const browser = await puppeteer.launch()
+  const page = await browser.newPage()
+  await page.goto(URL)
 
-    days.forEach((day) => {
-      schedule[day] = [];
+  // Get a list of all groups
+  const groups = await page.evaluate(() => {
+    const selectElement = document.querySelector(
+      'select[name="ctl00$cphMain$ctl05"]'
+    )
+    const options = Array.from(selectElement.options)
+    return options.map(option => ({ value: option.value, text: option.text }))
+  })
 
-      const dayHeaders = Array.from(document.querySelectorAll("h3"));
-      const dayHeader = dayHeaders.find((header) =>
-        header.textContent.includes(day),
-      );
+  // Display the list of groups to be selected
+  console.log('List of groups: ')
+  groups.forEach(group => console.log(`${group.text} (${group.value})`))
 
-      if (dayHeader) {
-        let nextElement = dayHeader.nextElementSibling;
+  // Waiting for user input to select a group
+  const chosenGroupNumber = await new Promise(resolve => {
+    const readline = require('readline').createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    })
+    readline.question('Enter the group number: ', answer => {
+      resolve(answer)
+      readline.close()
+    })
+  })
 
-        while (nextElement && nextElement.tagName !== "H3") {
-          if (nextElement.classList.contains("study")) {
-            const time = nextElement.previousElementSibling.textContent.trim();
-            const type = nextElement.querySelector("b").textContent.trim();
-            const titleElement = nextElement.querySelector("span");
+  // Search for the code of the selected group by number
+  const selectedGroup = groups.find(group => group.text === chosenGroupNumber)
 
-            let title = titleElement ? titleElement.textContent.trim() : "";
-            const titleMatch = title.match(/–\s*([^–]+)/);
-            title = titleMatch ? titleMatch[1].trim() : "";
+  if (selectedGroup) {
+    // Go to the schedule page of the selected group
+    await page.goto(`https://guap.ru/rasp/?g=${selectedGroup.value}`)
 
-            const location = nextElement.querySelector("em").textContent.trim();
+    const schedule = await page.evaluate(() => {
+      const days = [
+        'Понедельник',
+        'Вторник',
+        'Среда',
+        'Четверг',
+        'Пятница',
+        'Суббота',
+        'Воскресенье',
+      ]
+      const schedule = {}
 
-            const prepLink = nextElement.querySelector(".preps a");
-            const prep = {
-              name: prepLink.textContent.trim(),
-              url: prepLink.href,
-            };
+      days.forEach(day => {
+        schedule[day] = []
 
-            const groupLink = nextElement.querySelector(".groups a");
-            const group = {
-              name: groupLink.textContent.trim(),
-              url: groupLink.href,
-            };
+        const dayHeaders = Array.from(document.querySelectorAll('h3'))
+        const dayHeader = dayHeaders.find(header =>
+          header.textContent.includes(day)
+        )
 
-            schedule[day].push({
-              time: time,
-              type: type,
-              title: title,
-              location: location,
-              prep: prep,
-              group: group,
-            });
+        if (dayHeader) {
+          let nextElement = dayHeader.nextElementSibling
+
+          while (nextElement && nextElement.tagName !== 'H3') {
+            if (nextElement.classList.contains('study')) {
+              const time = nextElement.previousElementSibling.textContent.trim()
+              const typeElement = nextElement.querySelector('b.up, b.dn')
+              const type = typeElement
+                ? typeElement.classList.contains('up')
+                  ? 'на нечётной'
+                  : 'на чётной'
+                : 'на каждой'
+              const titleElement = nextElement.querySelector('span')
+
+              let title = titleElement ? titleElement.textContent.trim() : ''
+              const titleMatch = title.match(/–\s*([^–]+)/)
+              title = titleMatch ? titleMatch[1].trim() : ''
+
+              const location = nextElement
+                .querySelector('em')
+                .textContent.trim()
+
+              const prepLink = nextElement.querySelector('.preps a')
+              const prep = {
+                name: prepLink.textContent.trim(),
+                url: prepLink.href,
+              }
+
+              const groupLinks = Array.from(
+                nextElement.querySelectorAll('.groups a')
+              )
+              const groups = groupLinks.map(groupLink => ({
+                name: groupLink.textContent.trim(),
+                url: groupLink.href,
+              }))
+
+              schedule[day].push({
+                time: time,
+                type: type,
+                title: title,
+                location: location,
+                prep: prep,
+                groups: groups,
+              })
+            }
+
+            nextElement = nextElement.nextElementSibling
           }
-
-          nextElement = nextElement.nextElementSibling;
         }
-      }
-    });
+      })
 
-    return schedule;
-  });
+      return schedule
+    })
 
-  await browser.close();
+    const data = {
+      debug: debugInfo,
+      schedule: schedule,
+    }
 
-  fs.writeFileSync("data.json", JSON.stringify(schedule, null, 2));
+    fs.writeFileSync(
+      `data_${selectedGroup.value}.json`,
+      JSON.stringify(data, null, 2)
+    )
 
-  console.log("DATA > data.json");
-})();
+    console.log(`{DATA} > data_${selectedGroup.value}.json`)
+  } else {
+    console.log('Group not found')
+  }
+
+  await browser.close()
+})()
